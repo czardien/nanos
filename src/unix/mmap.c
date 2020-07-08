@@ -1,5 +1,4 @@
 #include <unix_internal.h>
-#include <page.h>
 
 //#define PF_DEBUG
 #ifdef PF_DEBUG
@@ -7,16 +6,6 @@
 #else
 #define pf_debug(x, ...)
 #endif
-
-static inline u64 page_map_flags(u64 vmflags)
-{
-    u64 flags = PAGE_NO_FAT | PAGE_USER;
-    if ((vmflags & VMAP_FLAG_EXEC) == 0)
-        flags |= PAGE_NO_EXEC;
-    if ((vmflags & VMAP_FLAG_WRITABLE))
-        flags |= PAGE_WRITABLE;
-    return flags;
-}
 
 static inline u32 new_offset_page(vmap match, u64 byte_offset)
 {
@@ -64,12 +53,11 @@ define_closure_function(3, 1, void, thread_demand_file_page_complete,
     refcount_release(&bound(t)->refcount);
 }
 
-define_closure_function(7, 0, void, thread_demand_file_page,
-                        thread, t, context, frame, pagecache_node, pn, u64, offset_page, u64, page_addr,
-                        u64, flags, boolean, shared)
+define_closure_function(6, 0, void, thread_demand_file_page,
+                        thread, t, context, frame, pagecache_node, pn, u64, offset_page, u64, page_addr, u64, flags)
 {
     pagecache_map_page(bound(pn), bound(offset_page), bound(page_addr), bound(flags),
-                       bound(shared), (status_handler)&bound(t)->demand_file_page_complete);
+                       (status_handler)&bound(t)->demand_file_page_complete);
 }
 
 boolean do_demand_page(u64 vaddr, vmap vm, context frame)
@@ -101,8 +89,10 @@ boolean do_demand_page(u64 vaddr, vmap vm, context frame)
     } else if (mmap_type == VMAP_MMAP_TYPE_FILEBACKED) {
         u64 page_addr = vaddr & ~PAGEMASK;
         u64 offset_page = new_offset_page(vm, page_addr - vm->node.r.start);
-        u64 flags = page_map_flags(vm->flags);
         boolean shared = (vm->flags & VMAP_FLAG_SHARED) != 0;
+        u64 flags = page_map_flags(vm->flags);
+        if (!shared)
+            flags &= ~PAGE_WRITABLE; /* cow */
         pf_debug("   node %p (start 0x%lx), offset 0x%lx\n",
                  vm->cache_node, vm->node.r.start, offset_page << PAGELOG);
 
@@ -112,7 +102,7 @@ boolean do_demand_page(u64 vaddr, vmap vm, context frame)
                fill, allocate memory, etc. */
             assert(!faulting_kernel_context);
             kernel_demand_page_completed = false;
-            pagecache_map_page(vm->cache_node, offset_page, page_addr, flags, shared,
+            pagecache_map_page(vm->cache_node, offset_page, page_addr, flags,
                                closure(heap_general(get_kernel_heaps()), kernel_demand_pf_complete));
             if (kernel_demand_page_completed) {
                 pf_debug("   immediate completion\n");
@@ -122,7 +112,7 @@ boolean do_demand_page(u64 vaddr, vmap vm, context frame)
         } else {
             /* A user fault can happen outside of the kernel lock. We can try to touch an existing
                page, but we can't allocate anything, fill a page or start a storage operation. */
-            if (pagecache_map_page_if_filled(vm->cache_node, offset_page, page_addr, flags, shared)) {
+            if (pagecache_map_page_if_filled(vm->cache_node, offset_page, page_addr, flags)) {
                 pf_debug("   immediate completion\n");
                 return true;
             }
@@ -131,7 +121,7 @@ boolean do_demand_page(u64 vaddr, vmap vm, context frame)
             thread t = current;
             refcount_reserve(&t->refcount);
             init_closure(&t->demand_file_page, thread_demand_file_page, t, frame,
-                         vm->cache_node, offset_page, page_addr, flags, shared);
+                         vm->cache_node, offset_page, page_addr, flags);
             init_closure(&t->demand_file_page_complete, thread_demand_file_page_complete, t, frame, vaddr);
             enqueue(runqueue, &t->demand_file_page);
         }

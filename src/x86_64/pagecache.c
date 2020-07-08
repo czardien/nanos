@@ -922,36 +922,49 @@ void pagecache_node_scan_shared_pages(pagecache_node pn, range q /* bytes */)
                           stack_closure(scan_shared_pages_intersection, pn->pv->pc));
 }
 
-/* cow
-
-   always make private pages nowrite
-   on write pf but vmap writable and private
-   - alloc new page, like anonymous, but swap with existing pte
-   - return reference to pagecache (explicit unmap would be inefficient)
- */
-
-static void map_page(pagecache_page pp, u64 vaddr, u64 flags, boolean shared)
+boolean pagecache_node_do_page_cow(pagecache_node pn, u64 offset_page, u64 vaddr, u64 flags)
 {
-    map(vaddr, pp->phys, PAGESIZE, flags);
+    pagecache_debug("%s: node %p, offset_page 0x%lx, vaddr 0x%lx, flags 0x%lx\n",
+                    __func__, pn, offset_page, vaddr, flags);
+    pagecache pc = pn->pv->pc;
+    u64 paddr = allocate_u64(pc->physical, PAGESIZE);
+    if (paddr == INVALID_PHYSICAL)
+        return false;
+    spin_lock(&pn->pages_lock);
+    pagecache_page pp = page_lookup_nodelocked(pn, offset_page);
+    assert(pp != INVALID_ADDRESS);
+    /* just overwrite old pte */
+    assert(flags & PAGE_WRITABLE);
+    map(vaddr, paddr, cache_pagesize(pc), flags);
+    runtime_memcpy(pointer_from_u64(vaddr), pp->kvirt, cache_pagesize(pc));
+    spin_unlock(&pn->pages_lock);
+    refcount_release(&pp->refcount);
+    return true;
+}
+
+static void map_page(pagecache pc, pagecache_page pp, u64 vaddr, u64 flags)
+{
+    map(vaddr, pp->phys, cache_pagesize(pc), flags);
 }
 
 closure_function(5, 1, void, map_page_finish,
-                 pagecache_page, pp, u64, vaddr, u64, flags, boolean, shared, status_handler, complete,
+                 pagecache, pc, pagecache_page, pp, u64, vaddr, u64, flags, status_handler, complete,
                  status, s)
 {
     if (is_ok(s))
-        map_page(bound(pp), bound(vaddr), bound(flags), bound(shared));
+        map_page(bound(pc), bound(pp), bound(vaddr), bound(flags));
     apply(bound(complete), s);
     closure_finish();
 }
 
-void pagecache_map_page(pagecache_node pn, u64 offset_page, u64 vaddr, u64 flags, boolean shared,
+void pagecache_map_page(pagecache_node pn, u64 offset_page, u64 vaddr, u64 flags,
                         status_handler complete)
 {
-    heap h = pn->pv->pc->h;
+    pagecache pc = pn->pv->pc;
     spin_lock(&pn->pages_lock);
     pagecache_page pp = page_lookup_or_alloc_nodelocked(pn, offset_page);
-    merge m = allocate_merge(h, closure(h, map_page_finish, pp, vaddr, flags, shared, complete));
+    merge m = allocate_merge(pc->h, closure(pc->h, map_page_finish,
+                                            pc, pp, vaddr, flags, complete));
     status_handler k = apply_merge(m);
     touch_or_fill_page_by_num_nodelocked(pn, offset_page, m);
     spin_unlock(&pn->pages_lock);
@@ -959,7 +972,7 @@ void pagecache_map_page(pagecache_node pn, u64 offset_page, u64 vaddr, u64 flags
 }
 
 /* no-alloc / no-fill path, meant to be safe outside of kernel lock */
-boolean pagecache_map_page_if_filled(pagecache_node pn, u64 offset_page, u64 vaddr, u64 flags, boolean shared)
+boolean pagecache_map_page_if_filled(pagecache_node pn, u64 offset_page, u64 vaddr, u64 flags)
 {
     boolean mapped = false;
     spin_lock(&pn->pages_lock);
@@ -968,7 +981,7 @@ boolean pagecache_map_page_if_filled(pagecache_node pn, u64 offset_page, u64 vad
         goto out;
     if (touch_or_fill_page_nodelocked(pn, pp, 0)) {
         mapped = true;
-        map_page(pp, vaddr, flags, shared);
+        map_page(pn->pv->pc, pp, vaddr, flags);
     }
   out:
     spin_unlock(&pn->pages_lock);
@@ -976,7 +989,7 @@ boolean pagecache_map_page_if_filled(pagecache_node pn, u64 offset_page, u64 vad
 }
 
 /* need to move these to x86-specific pc routines */
-closure_function(3, 3, boolean, pagecache_unmap_page,
+closure_function(3, 3, boolean, pagecache_unmap_page_nodelocked,
                  pagecache_node, pn, u64, vaddr_base, u64, offset_page,
                  int, level, u64, vaddr, u64 *, entry)
 {
@@ -989,8 +1002,16 @@ closure_function(3, 3, boolean, pagecache_unmap_page,
         page_invalidate(vaddr, ignore);
         pagecache_page pp = page_lookup_nodelocked(bound(pn), pi);
         assert(pp != INVALID_ADDRESS);
-        assert(pp->refcount.c > 1);
-        refcount_release(&pp->refcount);
+        u64 phys = page_from_pte(old_entry);
+        if (phys == pp->phys) {
+            /* shared or cow */
+            assert(pp->refcount.c > 1);
+            refcount_release(&pp->refcount);
+        } else {
+            /* private copy */
+            pagecache pc = bound(pn)->pv->pc;
+            deallocate_u64(pc->physical, phys, cache_pagesize(pc));
+        }
     }
     return true;
 }
@@ -999,8 +1020,10 @@ void pagecache_unmap_pages(pagecache_node pn, range q /* bytes */, u64 offset_pa
 {
     pagecache_debug("%s: pn %p, v %R, offset_page 0x%lx\n", __func__, pn, q, offset_page);
     pagecache_node_close_shared_pages(pn, q);
-    traverse_ptes(q.start, range_span(q), stack_closure(pagecache_unmap_page, pn,
+    spin_lock(&pn->pages_lock);
+    traverse_ptes(q.start, range_span(q), stack_closure(pagecache_unmap_page_nodelocked, pn,
                                                           q.start, offset_page));
+    spin_unlock(&pn->pages_lock);
 }
 
 #else
@@ -1111,7 +1134,7 @@ static inline void page_list_init(struct pagelist *pl)
     pl->pages = 0;
 }
 
-pagecache allocate_pagecache(heap general, heap contiguous, u64 pagesize)
+pagecache allocate_pagecache(heap general, heap contiguous, heap physical, u64 pagesize)
 {
     pagecache pc = allocate(general, sizeof(struct pagecache));
     if (pc == INVALID_ADDRESS)
@@ -1122,6 +1145,7 @@ pagecache allocate_pagecache(heap general, heap contiguous, u64 pagesize)
     assert(pagesize == U64_FROM_BIT(pc->page_order));
     pc->h = general;
     pc->contiguous = contiguous;
+    pc->physical = physical;
     pc->zero_page = allocate_zero(contiguous, pagesize);
     if (pc->zero_page == INVALID_ADDRESS) {
         msg_err("failed to allocate zero page\n");
