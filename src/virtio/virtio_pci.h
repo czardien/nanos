@@ -48,6 +48,7 @@ enum {
 };
 
 struct vtpci {
+    struct vtdev virtio_dev; /* must be first */
     struct pci_dev _dev;
     pci_dev dev;
     int regs[VTPCI_REG_MAX];
@@ -57,11 +58,6 @@ struct vtpci {
     struct pci_bar notify_config;  // notify config
     struct pci_bar device_config;  // device config
 
-    u64 dev_features;              // device features
-    u64 features;                  // negotiated features
-
-    heap contiguous;
-    heap general;
     struct virtio_feature_desc	*vtpci_child_feat_desc;
 
     int vtpci_nvqs;
@@ -89,6 +85,7 @@ struct vtpci {
 boolean vtpci_probe(pci_dev d, int virtio_dev_id);
 vtpci attach_vtpci(heap h, heap page_allocator, pci_dev d, u64 feature_mask);
 status vtpci_alloc_virtqueue(vtpci dev, const char *name, int idx, struct virtqueue **result);
+void vtpci_notify_virtqueue(vtpci sc, u16 queue, bytes notify_offset);
 void vtpci_set_status(vtpci dev, u8 status);
 boolean vtpci_is_modern(vtpci dev);
 
