@@ -678,7 +678,7 @@ closure_function(0, 1, void, msync_vmap,
         (vm->flags & VMAP_FLAG_MMAP) &&
         (vm->flags & VMAP_MMAP_TYPE_MASK) == VMAP_MMAP_TYPE_FILEBACKED) {
         assert(vm->cache_node);
-        pagecache_node_scan_shared_pages(vm->cache_node, n->r);
+        pagecache_node_scan_and_commit_shared_pages(vm->cache_node, n->r);
     }
 }
 

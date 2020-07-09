@@ -33,7 +33,7 @@ boolean pagecache_map_page_if_filled(pagecache_node pn, u64 offset_page, u64 vad
 
 boolean pagecache_node_do_page_cow(pagecache_node pn, u64 offset_page, u64 vaddr, u64 flags);
 
-void pagecache_node_scan_shared_pages(pagecache_node pn, range q /* bytes */);
+void pagecache_node_scan_and_commit_shared_pages(pagecache_node pn, range q /* bytes */);
 
 void pagecache_node_close_shared_pages(pagecache_node pn, range q /* bytes */);
 

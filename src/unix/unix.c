@@ -71,8 +71,9 @@ static boolean handle_protection_fault(context frame, u64 vaddr, vmap vm)
 {
     /* vmap found, with protection violation set --> send prot violation */
     if (is_protection_fault(frame)) {
-        u64 flags = VMAP_FLAG_MMAP | VMAP_FLAG_WRITABLE | VMAP_MMAP_TYPE_FILEBACKED;
-        if (is_write_fault(frame) && (vm->flags & flags) == flags) {
+        u64 flags = VMAP_FLAG_MMAP | VMAP_FLAG_WRITABLE;
+        if (is_write_fault(frame) && (vm->flags & flags) == flags &&
+            (vm->flags & VMAP_MMAP_TYPE_MASK) == VMAP_MMAP_TYPE_FILEBACKED) {
             /* copy on write */
             u64 vaddr_aligned = vaddr & ~MASK(PAGELOG);
             u64 offset_page = vm->offset_page + ((vaddr_aligned - vm->node.r.start)

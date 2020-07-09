@@ -137,7 +137,6 @@ static inline void change_page_state_locked(pagecache pc, pagecache_page pp, int
             pagelist_move(&pc->dirty, &pc->active, pp);
         } else {
             assert(old_state == PAGECACHE_PAGESTATE_WRITING);
-            // XXX make allowance in write completion
             pagelist_move(&pc->dirty, &pc->writing, pp);
         }
         break;
@@ -624,8 +623,6 @@ u64 pagecache_drain(pagecache pc, u64 drain_bytes)
     return evicted << pc->page_order;
 }
 
-static void pagecache_scan(pagecache pc);
-
 /* TODO could encode completion to indicate completion on transition
    to new rather than writing - otherwise we're completing on storage
    request issuance, not completion - just for sync use */
@@ -647,6 +644,14 @@ static void pagecache_finish_pending_writes(pagecache pc, pagecache_volume pv, p
     apply(complete, STATUS_OK);
 }
 
+#ifdef STAGE3
+static void pagecache_scan(pagecache pc);
+static void pagecache_scan_node(pagecache_node pn);
+#else
+static void pagecache_scan(pagecache pc) {}
+static void pagecache_scan_node(pagecache_node pn) {}
+#endif
+
 void pagecache_sync_volume(pagecache_volume pv, status_handler complete)
 {
     pagecache_debug("%s: pv %p, complete %p (%F)\n", __func__, pv, complete, complete);
@@ -664,6 +669,7 @@ void pagecache_node_finish_pending_writes(pagecache_node pn, status_handler comp
 void pagecache_sync_node(pagecache_node pn, status_handler complete)
 {
     pagecache_debug("%s: pn %p, complete %p (%F)\n", __func__, pn, complete, complete);
+    pagecache_scan_node(pn);
     pagecache_finish_pending_writes(pn->pv->pc, 0, pn, complete);
 }
 #endif /* !PAGECACHE_READ_ONLY */
@@ -733,20 +739,20 @@ closure_function(2, 3, boolean, pagecache_check_dirty_page,
         pagecache_page pp = page_lookup_nodelocked(sm->pn, pi);
         assert(pp != INVALID_ADDRESS);
         spin_lock(&pc->state_lock);
-        assert(page_state(pp) != PAGECACHE_PAGESTATE_DIRTY); // XXX could we hit this twice?
-        change_page_state_locked(pc, pp, PAGECACHE_PAGESTATE_DIRTY);
+        if (page_state(pp) != PAGECACHE_PAGESTATE_DIRTY)
+            change_page_state_locked(pc, pp, PAGECACHE_PAGESTATE_DIRTY);
         spin_unlock(&pc->state_lock);
     }
     return true;
 }
 
-void pagecache_scan_shared_map(pagecache pc, pagecache_shared_map sm)
+static void pagecache_scan_shared_map(pagecache pc, pagecache_shared_map sm)
 {
     traverse_ptes(sm->n.r.start, range_span(sm->n.r),
                   stack_closure(pagecache_check_dirty_page, pc, sm));
 }
 
-void pagecache_scan_shared_mappings(pagecache pc)
+static void pagecache_scan_shared_mappings(pagecache pc)
 {
     pagecache_debug("%s\n", __func__);
     list_foreach(&pc->shared_maps, l) {
@@ -756,7 +762,7 @@ void pagecache_scan_shared_mappings(pagecache pc)
     }
 }
 
-void pagecache_scan_node(pagecache_node pn)
+static void pagecache_scan_node(pagecache_node pn)
 {
     pagecache_debug("%s\n", __func__);
     rangemap_foreach(pn->shared_maps, n) {
@@ -780,7 +786,6 @@ closure_function(2, 1, void, pagecache_commit_complete,
     spin_lock(&pc->state_lock);
     assert(pp->write_count > 0);
     if (pp->write_count-- == 1) {
-        // XXX walk though this again...seems we wouldn't be at last count if still dirty?
         if (page_state(pp) != PAGECACHE_PAGESTATE_DIRTY)
             change_page_state_locked(pc, pp, PAGECACHE_PAGESTATE_NEW);
         pagecache_page_queue_completions_locked(pc, pp, s);
@@ -915,11 +920,12 @@ closure_function(1, 1, void, scan_shared_pages_intersection,
     pagecache_scan_shared_map(bound(pc), sm);
 }
 
-void pagecache_node_scan_shared_pages(pagecache_node pn, range q /* bytes */)
+void pagecache_node_scan_and_commit_shared_pages(pagecache_node pn, range q /* bytes */)
 {
     pagecache_debug("%s: node %p, q %R\n", __func__, pn, q);
     rangemap_range_lookup(pn->shared_maps, q,
                           stack_closure(scan_shared_pages_intersection, pn->pv->pc));
+    pagecache_commit_dirty_pages(pn->pv->pc);
 }
 
 boolean pagecache_node_do_page_cow(pagecache_node pn, u64 offset_page, u64 vaddr, u64 flags)
@@ -1025,9 +1031,6 @@ void pagecache_unmap_pages(pagecache_node pn, range q /* bytes */, u64 offset_pa
                                                           q.start, offset_page));
     spin_unlock(&pn->pages_lock);
 }
-
-#else
-void pagecache_scan(pagecache pc) {}
 #endif
 
 closure_function(1, 1, boolean, pagecache_page_print_key,
