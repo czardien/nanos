@@ -70,7 +70,7 @@ boolean do_demand_page(u64 vaddr, vmap vm, context frame)
     }
 
     pf_debug("%s: %s, %s, vaddr 0x%16lx, vm flags 0x%2lx,\n", __func__,
-             in_kernel ? "kern" : "user", vm->flags & VMAP_FLAG_ANONYMOUS ? "anon" : "file",
+             in_kernel ? "kern" : "user", string_from_mmap_type(vm->flags & VMAP_MMAP_TYPE_MASK),
              vaddr, vm->flags);
     pf_debug("   vmap %p, frame %p\n", vm, frame);
 
@@ -164,7 +164,7 @@ closure_function(0, 1, void, vmap_dump_node,
                  rmnode, n)
 {
     vmap curr = (vmap)n;
-    rprintf("  %R, %s%s%s%s\n", curr->node.r,
+    rprintf("  %R, %s%s %s%s\n", curr->node.r,
             (curr->flags & VMAP_FLAG_MMAP) ? "mmap " : "",
             string_from_mmap_type(curr->flags & VMAP_MMAP_TYPE_MASK),
             (curr->flags & VMAP_FLAG_WRITABLE) ? "writable " : "",
@@ -653,18 +653,17 @@ static varea allocate_varea(heap h, rangemap vareas, range r, id_heap vh, boolea
     return va;
 }
 
-/* XXX defaulting to leniency; revisit */
+/* allow mappings outside of managed areas, but require range reserve to pass within one */
 static boolean mmap_reserve_range(process p, range q)
 {
-    /* XXX can tweak rangemap range lookup to terminate if a callback
-       fails...kind of tired of messing with that interface */
     varea a = (varea)rangemap_first_node(p->vareas);
     while (a != INVALID_ADDRESS) {
         if (ranges_intersect(q, a->node.r)) {
             if (!a->allow_fixed)
                 return false;
             if (a->h)
-                id_heap_set_area(a->h, q.start, range_span(q), false, true);
+                if (!id_heap_set_area(a->h, q.start, range_span(q), true, true))
+                    return false;
         }
         a = (varea)rangemap_next_node(p->vareas, (rmnode)a);
     }
@@ -767,9 +766,13 @@ static sysreturn mmap(void *addr, u64 length, int prot, int flags, int fd, u64 o
 	    return -EINVAL;
 	}
 
+        /* Release intersecting portions of existing maps */
+        range q = irangel(where, len);
+        thread_log(current, "   fixed map %R, release intersections and reserve virtual space", q);
+        process_unmap_range(p, q);
+
         /* A specified address is only allowed in certain areas. Programs may specify
            a fixed address to augment some existing mapping. */
-        range q = irangel(where, len);
         if (!mmap_reserve_range(p, q)) {
 	    thread_log(current, "   fail: fixed address range %R outside of lowmem or virtual_page heap\n", q);
 	    return -ENOMEM;
@@ -794,28 +797,21 @@ static sysreturn mmap(void *addr, u64 length, int prot, int flags, int fd, u64 o
             return -EINVAL;
         }
     }
-
-    if (vmap_mmap_type == VMAP_MMAP_TYPE_ANONYMOUS ||
-        vmap_mmap_type == VMAP_MMAP_TYPE_FILEBACKED) {
-        if (!fixed) {
-            boolean is_32bit = (flags & MAP_32BIT) != 0; /* allocate from 32-bit address space */
-            where = is_32bit ? id_heap_alloc_subrange(p->virtual32, len, 0x80000000, 0x100000000) :
-                allocate_u64((heap)p->virtual_page, len);
-            if (where == (u64)INVALID_ADDRESS) {
-                /* We'll always want to know about low memory conditions, so just bark. */
-                msg_err("failed to allocate %svirtual memory, size 0x%lx\n",
-                        is_32bit ? "32-bit " : "", len);
-                return -ENOMEM;
-            }
-            thread_log(current, "   alloc: 0x%lx\n", where);
-        } else {
-            /* release anything we might overlap */
-            range r = irangel(where, len);
-            thread_log(current, "   unmapping range %R", r);
-            process_unmap_range(p, r);
-        }
-    }
     vmflags |= vmap_mmap_type;
+
+    if (!fixed && (vmap_mmap_type == VMAP_MMAP_TYPE_ANONYMOUS ||
+                   vmap_mmap_type == VMAP_MMAP_TYPE_FILEBACKED)) {
+        boolean is_32bit = (flags & MAP_32BIT) != 0; /* allocate from 32-bit address space */
+        where = is_32bit ? id_heap_alloc_subrange(p->virtual32, len, 0x80000000, 0x100000000) :
+            allocate_u64((heap)p->virtual_page, len);
+        if (where == (u64)INVALID_ADDRESS) {
+            /* We'll always want to know about low memory conditions, so just bark. */
+            msg_err("failed to allocate %svirtual memory, size 0x%lx\n",
+                    is_32bit ? "32-bit " : "", len);
+            return -ENOMEM;
+        }
+        thread_log(current, "   alloc: 0x%lx\n", where);
+    }
 
     sysreturn ret = where;
     switch (vmap_mmap_type) {

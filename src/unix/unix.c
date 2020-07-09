@@ -62,9 +62,9 @@ void deliver_segv(thread t, u64 vaddr, s32 si_code)
 
 const char *string_from_mmap_type(int type)
 {
-    return type == VMAP_MMAP_TYPE_ANONYMOUS ? "anonymous " :
-        (type == VMAP_MMAP_TYPE_FILEBACKED ? "filebacked " :
-         (type == VMAP_MMAP_TYPE_IORING ? "io_uring " : ""));
+    return type == VMAP_MMAP_TYPE_ANONYMOUS ? "anonymous" :
+        (type == VMAP_MMAP_TYPE_FILEBACKED ? "filebacked" :
+         (type == VMAP_MMAP_TYPE_IORING ? "io_uring" : "unknown"));
 }
 
 static boolean handle_protection_fault(context frame, u64 vaddr, vmap vm)
@@ -79,14 +79,15 @@ static boolean handle_protection_fault(context frame, u64 vaddr, vmap vm)
                                                  >> PAGELOG);
             pf_debug("copy-on-write for private map: vaddr 0x%lx, node %p, offset_page 0x%lx\n",
                      vaddr, vm->cache_node, offset_page);
-            if (!pagecache_node_do_page_cow(vm->cache_node, offset_page, vaddr_aligned, page_map_flags(vm->flags))) {
+            if (!pagecache_node_do_page_cow(vm->cache_node, offset_page, vaddr_aligned,
+                                            page_map_flags(vm->flags))) {
                 msg_err("cannot get physical page; OOM\n");
                 return false;
             }
             return true;
         }
         pf_debug("page protection violation\naddr 0x%lx, rip 0x%lx, "
-                 "error %s%s%s vm->flags (%s%s%s%s)",
+                 "error %s%s%s vm->flags (%s%s %s%s)",
                  vaddr, frame_return_address(frame),
                  is_write_fault(frame) ? "W" : "R",
                  is_usermode_fault(frame) ? "U" : "S",
