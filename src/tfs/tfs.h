@@ -12,8 +12,6 @@ sg_io fsfile_get_writer(fsfile f);
 
 extern io_status_handler ignore_io_status;
 
-#define SECTOR_OFFSET 9ULL
-#define SECTOR_SIZE (1ULL << SECTOR_OFFSET)
 #define MIN_EXTENT_SIZE PAGESIZE
 #define MAX_EXTENT_SIZE (1 * MB)
 
