@@ -1080,7 +1080,8 @@ void create_filesystem(heap h,
     filesystem fs = allocate(h, sizeof(struct filesystem));
     assert(fs != INVALID_ADDRESS);
     fs->h = h;
-    ignore_io_status = closure(h, ignore_io);
+    if (!ignore_io_status)
+        ignore_io_status = closure(h, ignore_io);
     fs->files = allocate_table(h, identity_key, pointer_equal);
     fs->extents = allocate_table(h, identity_key, pointer_equal);
     fs->zero_page = pagecache_get_zero_page(pc);
@@ -1104,6 +1105,19 @@ void create_filesystem(heap h,
 #endif
     fs->tl = log_create(h, fs, initialize, closure(h, log_complete, complete, fs));
 }
+
+#ifndef BOOT
+void destroy_filesystem(filesystem fs)
+{
+    tfs_debug("%s %p\n", __func__, fs);
+    log_destroy(fs->tl);
+    destroy_id_heap(fs->storage);
+    pagecache_dealloc_volume(fs->pv);
+    deallocate_table(fs->extents);
+    deallocate_table(fs->files);
+    deallocate(fs->h, fs, sizeof(*fs));
+}
+#endif
 
 tuple filesystem_getroot(filesystem fs)
 {

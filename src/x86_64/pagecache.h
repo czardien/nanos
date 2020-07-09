@@ -29,6 +29,7 @@ sg_io pagecache_node_get_reader(pagecache_node pn);
 sg_io pagecache_node_get_writer(pagecache_node pn);
 
 pagecache_volume pagecache_allocate_volume(pagecache pc, u64 length, int block_order);
+void pagecache_dealloc_volume(pagecache_volume pv);
 
 pagecache allocate_pagecache(heap general, heap contiguous, u64 pagesize);
 
