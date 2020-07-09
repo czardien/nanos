@@ -30,6 +30,7 @@
 #include <page.h>
 
 #include "virtio_internal.h"
+#include "virtio_mmio.h"
 #include "virtio_pci.h"
 
 //#define VIRTQUEUE_DEBUG
@@ -318,6 +319,9 @@ static int virtqueue_notify(virtqueue vq)
     int should_notify = (vq->used->flags & VRING_USED_F_NO_NOTIFY) == 0;
     if (should_notify)
         switch (vq->dev->transport) {
+        case VTIO_TRANSPORT_MMIO:
+            vtmmio_set_u32((vtmmio)vq->dev, vq->notify_offset, vq->queue_index);
+            break;
         case VTIO_TRANSPORT_PCI:
             vtpci_notify_virtqueue((vtpci)vq->dev, vq->queue_index,
                 vq->notify_offset);

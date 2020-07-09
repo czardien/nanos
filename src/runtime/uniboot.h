@@ -8,6 +8,9 @@
 #define PAGES_BASE  0xffffffffc0000000ull
 #define USER_LIMIT  0x0000800000000000ull
 
+/* Physical memory address where kernel ELF is loaded */
+#define KERNEL_BASE_PHYS    0x00200000ul
+
 #ifdef BOOT
 
 #include <def32.h>
