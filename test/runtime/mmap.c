@@ -855,8 +855,30 @@ static void filebacked_test(heap h)
     buffer_clear(sha);
     sha256(sha, b);
     rprintf("** bazfile sha256:\n%X", sha);
-
     munmap(p, WRITE_STRESS_FILESIZE);
+    close(fd);
+
+    printf("** testing partial unmaps (vmap edits)\n");
+    fd = open("unmapme", O_RDONLY);
+    if (fd < 0)
+        handle_err("open unmapme");
+    p = mmap(NULL, PAGESIZE * 5, PROT_READ, MAP_PRIVATE, fd, 0);
+    if (p == (void *)-1ull)
+        handle_err("mmap bazfile");
+
+    printf("   offset unmap (head remain)\n");
+    munmap(p + (PAGESIZE * 4), PAGESIZE);
+
+    printf("   unmap at start (tail remain)\n");
+    (void)*((volatile unsigned long *)p); /* induce offset_page computation bug */
+    munmap(p, PAGESIZE);
+
+    printf("   unmap in middle (head and tail remain)\n");
+    munmap(p + (PAGESIZE * 2), PAGESIZE);
+
+    printf("   unmap of remaining, isolated pages (neither head nor tail)\n");
+    munmap(p + PAGESIZE, PAGESIZE);
+    munmap(p + (PAGESIZE * 3), PAGESIZE);
     close(fd);
     printf("** all file-backed tests passed\n");
 }
