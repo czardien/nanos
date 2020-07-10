@@ -332,7 +332,7 @@ void epoll_finish(epoll e);
 #define VMAP_MMAP_TYPE_MASK       0x0f00
 #define VMAP_MMAP_TYPE_ANONYMOUS  0x0100
 #define VMAP_MMAP_TYPE_FILEBACKED 0x0200
-#define VMAP_MMAP_TYPE_IORING     0x0040
+#define VMAP_MMAP_TYPE_IORING     0x0400
 
 typedef struct vmap {
     struct rmnode node;

@@ -41,6 +41,8 @@ closure_function(0, 1, void, kernel_demand_pf_complete,
     kernel_demand_page_completed = true;
 }
 
+static closure_struct(kernel_demand_pf_complete, do_kernel_demand_pf_complete);
+
 define_closure_function(3, 1, void, thread_demand_file_page_complete,
                         thread, t, context, frame, u64, vaddr,
                         status, s)
@@ -118,7 +120,7 @@ boolean do_demand_page(u64 vaddr, vmap vm, context frame)
             assert(!faulting_kernel_context);
             kernel_demand_page_completed = false;
             pagecache_map_page(vm->cache_node, offset_page, page_addr, flags,
-                               closure(heap_general(get_kernel_heaps()), kernel_demand_pf_complete));
+                               (status_handler)&do_kernel_demand_pf_complete);
             if (kernel_demand_page_completed) {
                 pf_debug("   immediate completion\n");
                 return true;
@@ -962,6 +964,7 @@ void mmap_process_init(process p)
     assert(allocate_vmap(p->vmaps, irangel(VSYSCALL_BASE, PAGESIZE),
                          ivmap(VMAP_FLAG_EXEC, 0,0)) != INVALID_ADDRESS);
 
+    init_closure(&do_kernel_demand_pf_complete, kernel_demand_pf_complete);
 }
 
 void register_mmap_syscalls(struct syscall *map)
